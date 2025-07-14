@@ -1,0 +1,38 @@
+{
+  "orchestrator": {
+    "max_parallel_agents": 5,
+    "timeout_seconds": 300,
+    "retry_failed_agents": true,
+    "max_retries": 3
+  },
+  "table_discovery": {
+    "use_ai_classification": true,
+    "cardinality_threshold": 20,
+    "sample_size": 1000,
+    "ai_schema_analysis": true
+  },
+  "metric_computation": {
+    "use_adaptive_thresholds": true,
+    "outlier_detection_method": "iqr",
+    "percentile_threshold": 0.99,
+    "rare_category_threshold": 0.01,
+    "ai_anomaly_detection": true
+  },
+  "nlp_query": {
+    "supported_languages": ["en"],
+    "context_window": 10,
+    "confidence_threshold": 0.7,
+    "fallback_to_keywords": true
+  },
+  "results_writer": {
+    "delta_table_name": "dq_metrics.daily_results",
+    "partition_by": ["run_date"],
+    "optimize_after_write": true,
+    "vacuum_retention_hours": 168
+  },
+  "logging": {
+    "level": "INFO",
+    "log_ai_interactions": true,
+    "log_performance_metrics": true
+  }
+}
