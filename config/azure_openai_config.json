@@ -1,0 +1,11 @@
+{
+  "endpoint": "https://your-resource.openai.azure.com/",
+  "api_key": "${AZURE_OPENAI_API_KEY}",
+  "api_version": "2024-02-01",
+  "deployment_name": "gpt-4",
+  "temperature": 0.3,
+  "max_tokens": 1000,
+  "timeout": 30,
+  "max_retries": 3,
+  "backoff_factor": 2
+}

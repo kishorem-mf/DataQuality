@@ -1,0 +1,24 @@
+{
+  "tables": [
+    "beliv_prd.sales.orders",
+    "beliv_prd.inventory.stock",
+    "beliv_prd.catalogs.tipo_cambio",
+    "beliv_prd.commercial.nocbc_sales",
+    "beliv_prd.commercial.nocbc_inventories",
+    "beliv_prd.catalogs.modelos_negocio",
+    "beliv_prd.financial.partidas_individuales",
+    "beliv_prd.catalogs.conversion_factor_beliv",
+    "beliv_prd.commercial.theoretical_inventory",
+    "beliv_prd.commercial.cbc_inventory",
+    "beliv_prd.catalogs.organization_beliv",
+    "beliv_prd.catalogs.location_beliv",
+    "beliv_prd.catalogs.warehouse_beliv",
+    "beliv_prd.commercial.facturacion_agrupada",
+    "beliv_prd.commercial.facturacion_explosionada"
+  ],
+  "sampling_rate": 0.01,
+  "max_tables_per_run": 10,
+  "ai_enabled": true,
+  "parallel_processing": true,
+  "exclude_columns": ["ingest_date", "report_date"]
+}

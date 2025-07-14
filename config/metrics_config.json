@@ -1,0 +1,60 @@
+{
+  "default_metrics": ["completeness", "uniqueness", "validity", "consistency"],
+  "table_specific_config": {
+    "beliv_prd.sales.orders": {
+      "metrics": ["completeness", "uniqueness", "accuracy", "timeliness"],
+      "columns": {
+        "completeness": ["order_id", "customer_id", "order_date"],
+        "uniqueness": ["order_id"],
+        "accuracy": ["order_date", "total_amount"],
+        "timeliness": ["order_date", "created_at"]
+      },
+      "thresholds": {
+        "completeness": 0.95,
+        "uniqueness": 0.99,
+        "accuracy": 0.98
+      },
+      "ai_adaptive_thresholds": true
+    },
+    "beliv_prd.inventory.stock": {
+      "metrics": ["completeness", "uniqueness", "validity"],
+      "columns": {
+        "completeness": ["product_id", "warehouse_id", "quantity"],
+        "uniqueness": ["product_id", "warehouse_id"],
+        "validity": ["quantity", "last_updated"]
+      },
+      "thresholds": {
+        "completeness": 0.98,
+        "uniqueness": 0.99,
+        "validity": 0.95
+      },
+      "ai_adaptive_thresholds": true
+    }
+  },
+  "metric_definitions": {
+    "completeness": {
+      "description": "Percentage of non-null values",
+      "calculation": "non_null_count / total_count * 100"
+    },
+    "uniqueness": {
+      "description": "Percentage of unique values",
+      "calculation": "unique_count / total_count * 100"
+    },
+    "validity": {
+      "description": "Percentage of values within expected range/format",
+      "calculation": "valid_count / total_count * 100"
+    },
+    "consistency": {
+      "description": "Percentage of values matching expected format",
+      "calculation": "consistent_count / total_count * 100"
+    },
+    "accuracy": {
+      "description": "Percentage of values meeting accuracy criteria",
+      "calculation": "accurate_count / total_count * 100"
+    },
+    "timeliness": {
+      "description": "Percentage of recent/timely values",
+      "calculation": "timely_count / total_count * 100"
+    }
+  }
+}
