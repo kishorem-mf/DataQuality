@@ -14,7 +14,8 @@
     "beliv_prd.catalogs.location_beliv",
     "beliv_prd.catalogs.warehouse_beliv",
     "beliv_prd.commercial.facturacion_agrupada",
-    "beliv_prd.commercial.facturacion_explosionada"
+    "beliv_prd.commercial.facturacion_explosionada",
+    "sop_da.sop_da.md_customer"
   ],
   "sampling_rate": 0.01,
   "max_tables_per_run": 10,
