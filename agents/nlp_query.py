@@ -5,9 +5,17 @@ Processes natural language queries about data quality and converts them to actio
 
 import json
 import re
+import os
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
-from pyspark.sql import SparkSession
+from dotenv import load_dotenv
+
+try:
+    from pyspark.sql import SparkSession
+    PYSPARK_AVAILABLE = True
+except ImportError:
+    PYSPARK_AVAILABLE = False
+    SparkSession = None
 
 from .base_agent import AIEnabledAgent
 from services.llm_service import LLMService
@@ -20,15 +28,29 @@ class NLPQueryAgent(AIEnabledAgent):
     
     def __init__(self, config: Dict[str, Any], llm_service: LLMService):
         super().__init__("NLPQueryAgent", config, llm_service)
+        load_dotenv()
         self.spark = self._get_spark_session()
         self.query_patterns = self._initialize_query_patterns()
+        self.sql_executor = self._initialize_sql_executor()
         
-    def _get_spark_session(self) -> SparkSession:
+    def _get_spark_session(self) -> Optional[Any]:
         """Get or create Spark session"""
+        if not PYSPARK_AVAILABLE:
+            self.logger.warning("PySpark not available")
+            return None
         try:
             return SparkSession.getActiveSession()
         except:
             return SparkSession.builder.appName("DataQualityNLPQuery").getOrCreate()
+    
+    def _initialize_sql_executor(self) -> Optional[Any]:
+        """Initialize SQL executor for direct database queries"""
+        try:
+            from databricks import sql
+            return sql
+        except ImportError:
+            self.logger.warning("databricks-sql-connector not available")
+            return None
     
     def _initialize_query_patterns(self) -> Dict[str, List[str]]:
         """Initialize common query patterns for fallback processing"""
@@ -49,6 +71,14 @@ class NLPQueryAgent(AIEnabledAgent):
                 r'schema.*(\w+)',
                 r'describe.*table.*(\w+)',
                 r'what.*columns.*(\w+)'
+            ],
+            'row_count': [
+                r'row.*count.*from.*(\w+)',
+                r'count.*rows.*(\w+)',
+                r'how.*many.*rows.*(\w+)',
+                r'number.*of.*rows.*(\w+)',
+                r'count.*(\w+)',
+                r'show.*row.*count.*(\w+)'
             ],
             'quality_summary': [
                 r'quality.*summary.*(\w+)',
@@ -115,7 +145,7 @@ class NLPQueryAgent(AIEnabledAgent):
         Please classify this query and provide analysis in JSON format:
         
         {{
-            "query_type": "one of: completeness, uniqueness, validity, consistency, accuracy, timeliness, schema_info, quality_summary, column_classification, general",
+            "query_type": "one of: completeness, uniqueness, validity, consistency, accuracy, timeliness, schema_info, quality_summary, column_classification, row_count, general",
             "intent": "brief description of what the user wants to know",
             "confidence": "confidence level 0-1",
             "parameters": {{
@@ -186,6 +216,22 @@ class NLPQueryAgent(AIEnabledAgent):
             if table_short.lower() in query.lower():
                 entities['tables'].append(table)
         
+        # Extract potential table names from query using regex patterns
+        table_patterns = [
+            r'from\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)',
+            r'table\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)',
+            # Pattern to match catalog.schema.table format (3 parts)
+            r'([a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*)',
+            # Pattern to match schema.table format (2 parts)
+            r'([a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*)'
+        ]
+        
+        for pattern in table_patterns:
+            matches = re.findall(pattern, query, re.IGNORECASE)
+            for match in matches:
+                if match not in entities['tables']:
+                    entities['tables'].append(match)
+        
         # Extract column references (common patterns)
         column_patterns = [
             r'column[s]?\s+(\w+)',
@@ -225,6 +271,8 @@ class NLPQueryAgent(AIEnabledAgent):
                 return self._handle_uniqueness_query(extracted_entities, metrics_config)
             elif query_type == 'schema_info':
                 return self._handle_schema_query(extracted_entities)
+            elif query_type == 'row_count':
+                return self._handle_row_count_query(extracted_entities)
             elif query_type == 'quality_summary':
                 return self._handle_quality_summary_query(extracted_entities, metrics_config)
             elif query_type == 'categorical_columns':
@@ -259,8 +307,8 @@ class NLPQueryAgent(AIEnabledAgent):
         results = {}
         for table in tables:
             try:
-                # Get completeness metrics from Delta table or compute on-demand
-                completeness_data = self._get_completeness_metrics(table)
+                # Get actual completeness metrics using SQL execution
+                completeness_data = self._get_actual_completeness_metrics(table)
                 results[table] = completeness_data
             except Exception as e:
                 results[table] = {'error': str(e)}
@@ -311,7 +359,8 @@ class NLPQueryAgent(AIEnabledAgent):
         results = {}
         for table in tables:
             try:
-                schema_info = self._get_table_schema(table)
+                # Try to get actual schema info using SQL execution
+                schema_info = self._get_table_schema_with_sql(table)
                 results[table] = schema_info
             except Exception as e:
                 results[table] = {'error': str(e)}
@@ -319,6 +368,32 @@ class NLPQueryAgent(AIEnabledAgent):
         return {
             'response_type': 'schema',
             'message': self._format_schema_response(results),
+            'data': results
+        }
+    
+    def _handle_row_count_query(self, entities: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle row count queries"""
+        tables = entities.get('tables', [])
+        
+        if not tables:
+            return {
+                'response_type': 'error',
+                'message': 'Please specify a table name for row count.',
+                'suggestions': ['Example: "Show row count from table orders"']
+            }
+        
+        results = {}
+        for table in tables:
+            try:
+                # Get actual row count using SQL
+                row_count_data = self._get_table_row_count(table)
+                results[table] = row_count_data
+            except Exception as e:
+                results[table] = {'error': str(e)}
+        
+        return {
+            'response_type': 'row_count',
+            'message': self._format_row_count_response(results),
             'data': results
         }
     
@@ -462,16 +537,119 @@ class NLPQueryAgent(AIEnabledAgent):
             }
     
     # Helper methods for data retrieval
-    def _get_completeness_metrics(self, table_name: str) -> Dict[str, Any]:
-        """Get completeness metrics for a table"""
-        # This would query the Delta table with stored results
-        # For now, return a placeholder
-        return {
-            'table_name': table_name,
-            'completeness_score': 95.5,
-            'columns_analyzed': 10,
-            'columns_with_issues': 2
-        }
+    def _get_actual_completeness_metrics(self, table_name: str) -> Dict[str, Any]:
+        """Get actual completeness metrics by executing SQL queries"""
+        try:
+            # First get the table schema to identify columns
+            schema_result = self._get_table_schema_with_sql(table_name)
+            if 'error' in schema_result:
+                return schema_result
+            
+            columns = [col['name'] for col in schema_result['columns']]
+            
+            # Get total row count
+            row_count_result = self._get_table_row_count(table_name)
+            if 'error' in row_count_result:
+                return row_count_result
+            
+            total_rows = row_count_result['row_count']
+            
+            # Analyze completeness for each column
+            column_completeness = {}
+            critical_columns = self._identify_critical_columns(columns)
+            
+            for column in columns:
+                completeness_data = self._analyze_column_completeness(table_name, column, total_rows)
+                column_completeness[column] = completeness_data
+            
+            # Calculate overall completeness score
+            valid_counts = [col['valid_count'] for col in column_completeness.values()]
+            total_possible = len(columns) * total_rows
+            total_valid = sum(valid_counts)
+            overall_completeness = (total_valid / total_possible * 100) if total_possible > 0 else 0
+            
+            # Identify columns with issues
+            columns_with_issues = [col for col, data in column_completeness.items() 
+                                 if data['completeness_score'] < 100]
+            
+            return {
+                'table_name': table_name,
+                'total_rows': total_rows,
+                'total_columns': len(columns),
+                'overall_completeness': round(overall_completeness, 2),
+                'columns_analyzed': len(columns),
+                'columns_with_issues': len(columns_with_issues),
+                'critical_columns': critical_columns,
+                'column_details': column_completeness,
+                'summary': {
+                    'best_column': max(column_completeness.keys(), 
+                                     key=lambda k: column_completeness[k]['completeness_score']),
+                    'worst_column': min(column_completeness.keys(), 
+                                      key=lambda k: column_completeness[k]['completeness_score']),
+                    'critical_columns_avg': self._calculate_critical_avg(column_completeness, critical_columns)
+                }
+            }
+            
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def _identify_critical_columns(self, columns: List[str]) -> List[str]:
+        """Identify critical columns based on naming patterns"""
+        critical_patterns = ['id', 'key', 'name', 'desc', 'country', 'region', 'customer', 'product']
+        critical_columns = []
+        
+        for column in columns:
+            column_lower = column.lower()
+            if any(pattern in column_lower for pattern in critical_patterns):
+                if not column_lower.startswith('_'):  # Skip system columns
+                    critical_columns.append(column)
+        
+        return critical_columns
+    
+    def _analyze_column_completeness(self, table_name: str, column_name: str, total_rows: int) -> Dict[str, Any]:
+        """Analyze completeness for a specific column"""
+        try:
+            # Count null values
+            null_query = f"SELECT COUNT(*) FROM {table_name} WHERE {column_name} IS NULL"
+            null_result = self._execute_sql_query(null_query)
+            null_count = null_result['results'][0][0] if null_result.get('results') else 0
+            
+            # Count empty strings for string columns
+            empty_query = f"SELECT COUNT(*) FROM {table_name} WHERE {column_name} = '' OR TRIM({column_name}) = ''"
+            empty_result = self._execute_sql_query(empty_query)
+            empty_count = empty_result['results'][0][0] if empty_result.get('results') else 0
+            
+            # Calculate valid count
+            valid_count = total_rows - null_count - empty_count
+            completeness_score = (valid_count / total_rows * 100) if total_rows > 0 else 0
+            
+            return {
+                'column_name': column_name,
+                'null_count': null_count,
+                'empty_count': empty_count,
+                'valid_count': valid_count,
+                'total_missing': null_count + empty_count,
+                'completeness_score': round(completeness_score, 2),
+                'null_percentage': round((null_count / total_rows * 100), 2) if total_rows > 0 else 0,
+                'empty_percentage': round((empty_count / total_rows * 100), 2) if total_rows > 0 else 0
+            }
+            
+        except Exception as e:
+            return {
+                'column_name': column_name,
+                'error': str(e)
+            }
+    
+    def _calculate_critical_avg(self, column_completeness: Dict[str, Any], critical_columns: List[str]) -> float:
+        """Calculate average completeness for critical columns"""
+        if not critical_columns:
+            return 0.0
+        
+        critical_scores = [column_completeness[col]['completeness_score'] 
+                          for col in critical_columns 
+                          if col in column_completeness and 'completeness_score' in column_completeness[col]]
+        
+        return round(sum(critical_scores) / len(critical_scores), 2) if critical_scores else 0.0
     
     def _get_uniqueness_metrics(self, table_name: str) -> Dict[str, Any]:
         """Get uniqueness metrics for a table"""
@@ -484,6 +662,8 @@ class NLPQueryAgent(AIEnabledAgent):
     
     def _get_table_schema(self, table_name: str) -> Dict[str, Any]:
         """Get table schema information"""
+        if not self.spark:
+            return {'error': 'Spark session not available'}
         try:
             df = self.spark.table(table_name)
             columns = []
@@ -515,6 +695,8 @@ class NLPQueryAgent(AIEnabledAgent):
     
     def _get_categorical_columns(self, table_name: str) -> Dict[str, Any]:
         """Get categorical columns for a table"""
+        if not self.spark:
+            return {'error': 'Spark session not available'}
         try:
             df = self.spark.table(table_name)
             categorical_columns = []
@@ -536,6 +718,8 @@ class NLPQueryAgent(AIEnabledAgent):
     
     def _get_timestamp_columns(self, table_name: str) -> Dict[str, Any]:
         """Get timestamp columns for a table"""
+        if not self.spark:
+            return {'error': 'Spark session not available'}
         try:
             df = self.spark.table(table_name)
             timestamp_columns = []
@@ -555,6 +739,8 @@ class NLPQueryAgent(AIEnabledAgent):
     
     def _get_key_columns(self, table_name: str) -> Dict[str, Any]:
         """Get key columns for a table"""
+        if not self.spark:
+            return {'error': 'Spark session not available'}
         try:
             df = self.spark.table(table_name)
             key_columns = []
@@ -574,14 +760,41 @@ class NLPQueryAgent(AIEnabledAgent):
     
     # Response formatting methods
     def _format_completeness_response(self, results: Dict[str, Any]) -> str:
-        """Format completeness response"""
+        """Format completeness response with detailed analysis"""
         response_parts = []
         for table, data in results.items():
             if 'error' in data:
                 response_parts.append(f"❌ {table}: {data['error']}")
             else:
-                score = data.get('completeness_score', 0)
-                response_parts.append(f"✅ {table}: {score}% complete")
+                # Handle new detailed format
+                if 'overall_completeness' in data:
+                    overall_score = data['overall_completeness']
+                    total_rows = data.get('total_rows', 0)
+                    columns_with_issues = data.get('columns_with_issues', 0)
+                    critical_columns = data.get('critical_columns', [])
+                    critical_avg = data.get('summary', {}).get('critical_columns_avg', 0)
+                    
+                    response_parts.append(f"📊 {table}:")
+                    response_parts.append(f"  • Overall Completeness: {overall_score}%")
+                    response_parts.append(f"  • Total Rows: {total_rows:,}")
+                    response_parts.append(f"  • Columns with Issues: {columns_with_issues}")
+                    response_parts.append(f"  • Critical Columns: {len(critical_columns)} ({critical_avg}% avg)")
+                    
+                    # Show worst performing columns
+                    if 'column_details' in data:
+                        worst_columns = sorted(data['column_details'].items(), 
+                                             key=lambda x: x[1].get('completeness_score', 100))[:3]
+                        if worst_columns:
+                            response_parts.append("  • Worst Performing:")
+                            for col, col_data in worst_columns:
+                                if col_data.get('completeness_score', 100) < 100:
+                                    missing = col_data.get('total_missing', 0)
+                                    score = col_data.get('completeness_score', 100)
+                                    response_parts.append(f"    - {col}: {score}% ({missing} missing)")
+                else:
+                    # Handle legacy format
+                    score = data.get('completeness_score', 0)
+                    response_parts.append(f"✅ {table}: {score}% complete")
         
         return "\\n".join(response_parts)
     
@@ -607,6 +820,18 @@ class NLPQueryAgent(AIEnabledAgent):
                 columns = data.get('columns', [])
                 column_names = [col['name'] for col in columns]
                 response_parts.append(f"✅ {table} ({len(columns)} columns): {', '.join(column_names)}")
+        
+        return "\\n".join(response_parts)
+    
+    def _format_row_count_response(self, results: Dict[str, Any]) -> str:
+        """Format row count response"""
+        response_parts = []
+        for table, data in results.items():
+            if 'error' in data:
+                response_parts.append(f"❌ {table}: {data['error']}")
+            else:
+                row_count = data.get('row_count', 0)
+                response_parts.append(f"📊 {table}: {row_count:,} rows")
         
         return "\\n".join(response_parts)
     
@@ -657,3 +882,108 @@ class NLPQueryAgent(AIEnabledAgent):
                 response_parts.append(f"✅ {table}: {', '.join(columns) if columns else 'No key columns found'}")
         
         return "\\n".join(response_parts)
+    
+    def _execute_sql_query(self, query: str) -> Dict[str, Any]:
+        """Execute SQL query using Databricks SQL connector"""
+        if not self.sql_executor:
+            return {'error': 'SQL executor not available'}
+        
+        try:
+            # Get connection details
+            server_hostname = os.getenv('DATABRICKS_SERVER_HOSTNAME')
+            http_path = os.getenv('DATABRICKS_HTTP_PATH')
+            access_token = os.getenv('DATABRICKS_ACCESS_TOKEN')
+            
+            if not all([server_hostname, http_path, access_token]):
+                return {'error': 'Missing Databricks connection parameters'}
+            
+            # Connect and execute query
+            connection = self.sql_executor.connect(
+                server_hostname=server_hostname,
+                http_path=http_path,
+                access_token=access_token
+            )
+            
+            cursor = connection.cursor()
+            cursor.execute(query)
+            results = cursor.fetchall()
+            
+            # Get column names
+            column_names = [desc[0] for desc in cursor.description] if cursor.description else []
+            
+            cursor.close()
+            connection.close()
+            
+            return {
+                'success': True,
+                'query': query,
+                'results': results,
+                'column_names': column_names,
+                'row_count': len(results)
+            }
+            
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def _get_table_schema_with_sql(self, table_name: str) -> Dict[str, Any]:
+        """Get table schema using SQL DESCRIBE command"""
+        query = f"DESCRIBE {table_name}"
+        result = self._execute_sql_query(query)
+        
+        if 'error' in result:
+            return result
+        
+        # Process DESCRIBE results
+        columns = []
+        numeric_columns = []
+        temporal_columns = []
+        text_columns = []
+        
+        numeric_types = ['int', 'bigint', 'float', 'double', 'decimal', 'numeric']
+        temporal_types = ['date', 'timestamp']
+        
+        for row in result['results']:
+            col_name = row[0]
+            data_type = row[1]
+            comment = row[2] if len(row) > 2 else ''
+            
+            column_info = {
+                'name': col_name,
+                'data_type': data_type,
+                'comment': comment
+            }
+            columns.append(column_info)
+            
+            # Classify columns
+            data_type_lower = data_type.lower()
+            if any(num_type in data_type_lower for num_type in numeric_types):
+                numeric_columns.append(col_name)
+            elif any(temp_type in data_type_lower for temp_type in temporal_types):
+                temporal_columns.append(col_name)
+            elif 'string' in data_type_lower or 'varchar' in data_type_lower:
+                text_columns.append(col_name)
+        
+        return {
+            'table_name': table_name,
+            'columns': columns,
+            'total_columns': len(columns),
+            'numeric_columns': numeric_columns,
+            'temporal_columns': temporal_columns,
+            'text_columns': text_columns
+        }
+    
+    def _get_table_row_count(self, table_name: str) -> Dict[str, Any]:
+        """Get table row count using SQL COUNT query"""
+        query = f"SELECT COUNT(*) as row_count FROM {table_name}"
+        result = self._execute_sql_query(query)
+        
+        if 'error' in result:
+            return result
+        
+        row_count = result['results'][0][0] if result['results'] else 0
+        
+        return {
+            'table_name': table_name,
+            'row_count': row_count,
+            'query_executed': query
+        }
