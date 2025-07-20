@@ -1,0 +1,47 @@
+{
+  "description": "Unity Catalog configuration for SQL Agent",
+  "catalogs": [
+    "sop_da"
+  ],
+  "schemas": [
+    "sop_da.sop_da"
+  ],
+  "tables": [
+    "sop_da.sop_da.chat_history",
+    "sop_da.sop_da.cpu_data",
+    "sop_da.sop_da.event_logs",
+    "sop_da.sop_da.md_customer",
+    "sop_da.sop_da.md_location",
+    "sop_da.sop_da.md_location_resource",
+    "sop_da.sop_da.md_location_source",
+    "sop_da.sop_da.md_product",
+    "sop_da.sop_da.md_production_source_header",
+    "sop_da.sop_da.md_production_source_item",
+    "sop_da.sop_da.md_production_source_resource",
+    "sop_da.sop_da.md_resource",
+    "sop_da.sop_da.md_salesorder",
+    "sop_da.sop_da.md_transaction"
+  ],
+  "default_limits": {
+    "max_rows": 100,
+    "max_execution_time": 60
+  },
+  "allowed_operations": [
+    "SELECT",
+    "DESCRIBE", 
+    "SHOW TABLES",
+    "SHOW SCHEMAS",
+    "SHOW CATALOGS"
+  ],
+  "forbidden_operations": [
+    "DROP",
+    "DELETE",
+    "TRUNCATE",
+    "ALTER",
+    "CREATE",
+    "INSERT",
+    "UPDATE",
+    "GRANT",
+    "REVOKE"
+  ]
+}
